@@ -21,6 +21,19 @@ function headless_menu() {
     'access callback' => TRUE,
     'page arguments' => array(3, 4),
   );
+  // The following is for the node type where an id is not specified - to return all of the specified
+  $items['api/node/%'] = array(
+    'page callback' => 'headless_types',
+    'access callback' => TRUE,
+    'page arguments' => array(2),
+  );
+  // The following is for the node type where an id is not specified - to return all of the specified
+  $items['api/v2/node/%'] = array(
+    'page callback' => 'headless_types_v2',
+    'access callback' => TRUE,
+    'page arguments' => array(3),
+  );
+
   // Return JSON for individual terms.
   $items['api/%/term/%'] = array(
     'page callback' => 'headless_term_item',
@@ -132,6 +145,110 @@ function headless_type_v2($type, $nid) {
     backdrop_exit();
   }
 }
+
+/**
+ * Page callback for nodes type.
+ */
+function headless_types($type) {
+  $config = config_get('headless.settings', 'node');
+  printf("type = %s\n", $type);
+  printf("config-type = %s\n",$config[$type]);
+  
+  // check if the JSON output is enabled for the selected type 
+  if ($config[$type] != 1) {
+    $json_error = ['code' => 404];
+    backdrop_json_output($json_error);
+    backdrop_exit();
+  }
+  // load the requested node and check to see if types match or not
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node')
+        ->entityCondition('bundle', $type)
+        ->propertyCondition('status', 1) // get only published items
+      // It returns the first 10 nodes.
+      // Use range(10, 10) to get the next 10 nodes.
+        ->range(0, 10);  
+  $result = $query->execute();
+  if (isset($result['node'])) {
+    $nodes = entity_load('node', array_keys($result['node']));
+  }
+
+ // if ($requested_node->type == $type) {
+    backdrop_json_output($nodes);
+    backdrop_exit();
+ // }
+ // else {
+    $json_error = ['code' => 404];
+    backdrop_json_output($json_error);
+    backdrop_exit();
+//  }
+}
+
+/**
+ * Page callback for nodes type.
+ */
+function headless_types_v2($type) {
+  $config = config_get('headless.settings', 'node');
+  printf("type = %s\n", $type);
+  printf("config-type = %s\n",$config[$type]);
+  // check if the JSON output is enabled for the selected type 
+  if ($config[$type] != 1) {
+    $json_error = ['code' => 404];
+    backdrop_json_output($json_error);
+    backdrop_exit();
+  }
+  printf("Got Here2!\n");
+  // load the requested node and check to see if types match or not
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node')
+        ->entityCondition('bundle', $type)
+        ->propertyCondition('status', 1) // get only published items
+      // It returns the first 10 nodes.
+      // Use range(10, 10) to get the next 10 nodes.
+        ->range(0, 10);  
+  $result = $query->execute();
+  if (isset($result['node'])) {
+    $nodes = entity_load('node', array_keys($result['node']));
+  }
+
+ // if ($requested_node->type == $type) {
+    backdrop_json_output($nodes);
+    backdrop_exit();
+ // }
+ // else {
+    $json_error = ['code' => 404];
+    backdrop_json_output($json_error);
+    backdrop_exit();
+//  }
+}
+
+/**
+ * Page callback for types.
+ */
+function headless_types_pagination($view, $display_id) {
+  $args = func_get_args();
+  $config = config_get('headless.settings', 'node');
+  if ($config[$view] != 1) {
+    $json_error = ['code' => 404];
+    backdrop_json_output($json_error);
+    backdrop_exit();
+  }
+  $return = _nodes_get_node_result($view, $display_id, $args);
+
+  $my_json = [
+    'results' => $return['results'],
+    'total_items' => $return['total_items'],
+    'items_per_page' => $return['items_per_page'],
+    'total_pages' =>
+      (isset($return['items_per_page'])) ? ceil($return['total_items'] / $return['items_per_page']) : NULL,
+    'current_page' => $return['current_page'],
+  ];
+  backdrop_json_output($my_json);
+  json_last_error_msg();
+  backdrop_exit();
+}
+
+
 
 /**
  * Page callback for terms.
@@ -267,6 +384,48 @@ function headless_blocks($block) {
  * returned value.
  */
 function _views_get_view_result($name, $display_id = NULL, $args = NULL) {
+  array_shift($args);
+  if (count($args)) {
+    array_shift($args);
+  }
+
+  $view = views_get_view($name);
+  $return = array();
+  if (is_object($view)) {
+    if (is_array($args)) {
+      $view->set_arguments($args);
+    }
+    if (is_string($display_id)) {
+      $view->set_display($display_id);
+    }
+    else {
+      $view->init_display();
+    }
+    $view->pre_execute();
+    $view->execute();
+
+    $total_items = $view->query->pager->total_items;
+    $items_per_page = $view->query->pager->options['items_per_page'];
+    $current_page = $view->query->pager->current_page;
+
+    $return['total_items'] = $total_items;
+    $return['items_per_page'] = $items_per_page;
+    $return['current_page'] = $current_page;
+    $return['results'] = $view->result;
+    return $return;
+  }
+  else {
+    return array();
+  }
+}
+
+/**
+ * Helper function.
+ *
+ * We mimic the core function to add some extra pager data to the
+ * returned value.
+ */
+function _nodes_get_node_result($name, $args = NULL) {
   array_shift($args);
   if (count($args)) {
     array_shift($args);
