@@ -21,19 +21,12 @@ function headless_menu() {
     'access callback' => TRUE,
     'page arguments' => array(3, 4),
   );
-  // The following is for the node type where an id is not specified - to return all of the specified
+  // The following is for the node type where an id is not specified - to return all of the specified or a paginated subset.
   $items['api/node/%'] = array(
     'page callback' => 'headless_types',
     'access callback' => TRUE,
     'page arguments' => array(2),
   );
-  // The following is for the node type where an id is not specified - to return all of the specified
-  $items['api/v2/node/%'] = array(
-    'page callback' => 'headless_types_v2',
-    'access callback' => TRUE,
-    'page arguments' => array(3),
-  );
-
   // Return JSON for individual terms.
   $items['api/%/term/%'] = array(
     'page callback' => 'headless_term_item',
@@ -147,108 +140,49 @@ function headless_type_v2($type, $nid) {
 }
 
 /**
- * Page callback for nodes type.
+ * Page callback for nodes type when no {$id} is specified - with or without pagination.
+ *
+ * Queries are in the format of :
+ * GET /api/node/{type}?page[number]=X&page[size]=Y
+ *                  OR
+ * GET /api/node/{type}
+ *
+ * @param string $type
+ *   A string indicating the node type to query
  */
 function headless_types($type) {
+  $opt_page_number = NULL;
+  $opt_page_size   = NULL;
+
   $config = config_get('headless.settings', 'node');
-  printf("type = %s\n", $type);
-  printf("config-type = %s\n",$config[$type]);
-  
-  // check if the JSON output is enabled for the selected type 
+  // Check if output is enabled... if not return an error.
   if ($config[$type] != 1) {
     $json_error = ['code' => 404];
     backdrop_json_output($json_error);
     backdrop_exit();
   }
-  // load the requested node and check to see if types match or not
-  $query = new EntityFieldQuery();
-  $query->entityCondition('entity_type', 'node')
-        ->entityCondition('bundle', $type)
-        ->propertyCondition('status', 1) // get only published items
-      // It returns the first 10 nodes.
-      // Use range(10, 10) to get the next 10 nodes.
-        ->range(0, 10);  
-  $result = $query->execute();
-  if (isset($result['node'])) {
-    $nodes = entity_load('node', array_keys($result['node']));
+
+  // Get any optional arguments provided -- specifically we're interested in page[number]=value and page[size]=value.
+  $opt_query_args = backdrop_get_query_parameters();
+  // Is this proper php etiquette? Can it be safely removed?
+  // furthermore, we ASSUME that both the page number AND page size will always be specified as a pair.
+  if (count($opt_query_args) > 0) {
+    $opt_page_number = $opt_query_args['page']["number"];
+    $opt_page_size   = $opt_query_args['page']['size'];
   }
 
- // if ($requested_node->type == $type) {
-    backdrop_json_output($nodes);
-    backdrop_exit();
- // }
- // else {
-    $json_error = ['code' => 404];
-    backdrop_json_output($json_error);
-    backdrop_exit();
-//  }
-}
-
-/**
- * Page callback for nodes type.
- */
-function headless_types_v2($type) {
-  $config = config_get('headless.settings', 'node');
-  printf("type = %s\n", $type);
-  printf("config-type = %s\n",$config[$type]);
-  // check if the JSON output is enabled for the selected type 
-  if ($config[$type] != 1) {
-    $json_error = ['code' => 404];
-    backdrop_json_output($json_error);
+  // Validate all the optional argument possibilities. If anything looks wonky, return the specified error.
+  $ret_json_err = _validate_optional_values($opt_page_size, $opt_page_number);
+  if (is_null($ret_json_err) == FALSE) {
+    backdrop_json_output($ret_json_err);
     backdrop_exit();
   }
-  printf("Got Here2!\n");
-  // load the requested node and check to see if types match or not
-  $query = new EntityFieldQuery();
-  $query->entityCondition('entity_type', 'node')
-        ->entityCondition('bundle', $type)
-        ->propertyCondition('status', 1) // get only published items
-      // It returns the first 10 nodes.
-      // Use range(10, 10) to get the next 10 nodes.
-        ->range(0, 10);  
-  $result = $query->execute();
-  if (isset($result['node'])) {
-    $nodes = entity_load('node', array_keys($result['node']));
-  }
 
- // if ($requested_node->type == $type) {
-    backdrop_json_output($nodes);
-    backdrop_exit();
- // }
- // else {
-    $json_error = ['code' => 404];
-    backdrop_json_output($json_error);
-    backdrop_exit();
-//  }
-}
-
-/**
- * Page callback for types.
- */
-function headless_types_pagination($view, $display_id) {
-  $args = func_get_args();
-  $config = config_get('headless.settings', 'node');
-  if ($config[$view] != 1) {
-    $json_error = ['code' => 404];
-    backdrop_json_output($json_error);
-    backdrop_exit();
-  }
-  $return = _nodes_get_node_result($view, $display_id, $args);
-
-  $my_json = [
-    'results' => $return['results'],
-    'total_items' => $return['total_items'],
-    'items_per_page' => $return['items_per_page'],
-    'total_pages' =>
-      (isset($return['items_per_page'])) ? ceil($return['total_items'] / $return['items_per_page']) : NULL,
-    'current_page' => $return['current_page'],
-  ];
-  backdrop_json_output($my_json);
-  json_last_error_msg();
+  // Get the items to be returned in this JSON query..
+  $nodes_to_return = _nodes_get_node_result($type, $opt_page_size, $opt_page_number);
+  backdrop_json_output($nodes_to_return);
   backdrop_exit();
 }
-
-
 
 /**
  * Page callback for terms.
@@ -420,43 +354,109 @@ function _views_get_view_result($name, $display_id = NULL, $args = NULL) {
 }
 
 /**
- * Helper function.
+ * Validate the various possible optional values if they're specified.
  *
- * We mimic the core function to add some extra pager data to the
- * returned value.
+ * Return the first issue found if any.
+ *
+ * @param int $opt_page_size
+ *   Specifies the optional page size for paginated queries or NULL if not desired
+ *
+ * @param int $opt_page_number
+ *   Specifies the optional page number for paginated queries or NULL if not desired
+ *
+ * @return array
+ *   An associative array identifying the JSON error to be returned
+ *   OR NULL if no error found
  */
-function _nodes_get_node_result($name, $args = NULL) {
-  array_shift($args);
-  if (count($args)) {
-    array_shift($args);
+function _validate_optional_values($opt_page_size, $opt_page_number) {
+  $ret_json_err = NULL;
+
+  // First check to see if neither were specified -- if so we can just return..
+  if ((is_null($opt_page_number) == TRUE) && (is_null($opt_page_size) == TRUE)) {
+    return $ret_json_err;
   }
 
-  $view = views_get_view($name);
-  $return = array();
-  if (is_object($view)) {
-    if (is_array($args)) {
-      $view->set_arguments($args);
-    }
-    if (is_string($display_id)) {
-      $view->set_display($display_id);
-    }
-    else {
-      $view->init_display();
-    }
-    $view->pre_execute();
-    $view->execute();
+  // Check the optional arguments to ensure both are specified and not just one.
+  if ((is_null($opt_page_number) == TRUE) && (is_null($opt_page_size) == FALSE)) {
+    // If either-or then this is considered an error and we can return one.
+    $ret_json_err = ['code' => 422,
+      'source' => "page[size] specified but NOT page[number]",
+      'title' => "Invalid optional argument",
+      'detail' => "Both Page size and Page number MUST be specified as a pair"];
+    return $ret_json_err;
+  }
 
-    $total_items = $view->query->pager->total_items;
-    $items_per_page = $view->query->pager->options['items_per_page'];
-    $current_page = $view->query->pager->current_page;
+  if ((is_null($opt_page_number) == FALSE) && (is_null($opt_page_size) == TRUE)) {
+    // If either-or then this is considered an error and we can return one.
+    $ret_json_err = ['code' => 422,
+      'source' => "page[number] specified but NOT page[size]",
+      'title' => "Invalid optional argument",
+      'detail' => "Both Page size and Page number MUST be specified as a pair"];
+    return $ret_json_err;
+  }
 
-    $return['total_items'] = $total_items;
-    $return['items_per_page'] = $items_per_page;
-    $return['current_page'] = $current_page;
-    $return['results'] = $view->result;
-    return $return;
+  // Check to see if either page number or page size = 0.  If so return an error..
+  if ($opt_page_size == 0) {
+    $ret_json_err = ['code' => 422,
+      'source' => "page[size] specified as zero",
+      'title' => "Invalid optional argument",
+      'detail' => "Page size must be >0"];
+    return $ret_json_err;
+  }
+
+  if ($opt_page_number == 0) {
+    $ret_json_err = ['code' => 422,
+      'source' => "page[number] specified as zero",
+      'title' => "Invalid optional argument",
+      'detail' => "Page number must be >0"];
+    return $ret_json_err;
+  }
+  return $ret_json_err;
+}
+
+/**
+ * Issue a query to the database to get the desired nodes for the specified type.
+ *
+ * Return the nodes matching what the user wants - pagination will be done if specified by the arguments below.
+ *
+ * @param string $type
+ *   A string specifying the node type to search for.
+ *
+ * @param int $page_size
+ *   An integer indicating the page size to use for queries using pagination. If pagination is not desired, use NULL.
+ *
+ * @param int $page_number
+ *   An integer indicating the page number to use for queries using pagination. If pagination is not desired, use NULL.
+ *
+ * @return bool|EntityInterface|null
+ *   An array of nodes matching the type specified and according to the pagination values (if provided).
+ */
+function _nodes_get_node_result($type, $page_size, $page_number) {
+  // Load the requested node and check to see if types match or not.
+  $query = new EntityFieldQuery();
+  $nodes = NULL;
+
+  // If pagination is not specified, just return the entire set of nodes..
+  if ((is_null($page_number) == TRUE) && (is_null($page_size) == TRUE)) {
+    $query->entityCondition('entity_type', 'node')
+      ->entityCondition('bundle', $type)
+      // Get only published items by checking the status.
+      ->propertyCondition('status', 1);
   }
   else {
-    return array();
+    // If we get here we're doing a paginated query.. Figure out what range we need to use.
+    $start_index = ($page_size * $page_number) - $page_size;
+    $query->entityCondition('entity_type', 'node')
+      ->entityCondition('bundle', $type)
+      // Get only published items by checking the status.
+      ->propertyCondition('status', 1)
+      ->range($start_index, $page_size);
   }
+
+  // Do the query..
+  $result = $query->execute();
+  if (isset($result['node'])) {
+    $nodes = entity_load('node', array_keys($result['node']));
+  }
+  return ($nodes);
 }
